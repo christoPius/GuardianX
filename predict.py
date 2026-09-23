@@ -1,6 +1,9 @@
 from ultralytics import YOLO
 import cv2
 import numpy as np
+from loitering_detector import check_loitering
+from datetime import datetime
+from event_manager import create_event
 
 model = YOLO("runs/detect/train-3/weights/best.pt")
 
@@ -94,7 +97,9 @@ for result in results:
         
         track_ids = result.boxes.id.int().cpu().tolist()
         boxes = result.boxes.xyxy.cpu().numpy()
-        for track_id, box in zip(track_ids, boxes):
+        confidences = result.boxes.conf.cpu().numpy()
+
+        for track_id, box, confidence in zip(track_ids, boxes, confidences):
             x1, y1, x2, y2 = box
             center_x = int((x1+x2)/2)
             bottom_y = int(y2)
@@ -107,6 +112,24 @@ for result in results:
                 point,
                 False
             )>=0
+
+            current_time = datetime.now()
+            loitering = check_loitering(
+                track_id,
+                inside,
+                current_time
+            )
+
+            print("LOITER RESULT:", track_id, loitering)
+
+            if loitering:
+                print("loitering event", track_id)
+                create_event(
+                    event_type='loitering',
+                    track_id=track_id,
+                    confidence=float(confidence),
+                    zone="restricted zone"
+                )
 
             was_inside = previous_state.get(track_id, False)
 
@@ -122,5 +145,6 @@ for result in results:
     
     if key == ord("q"):
         break
-    
+
+
 cv2.destroyAllWindows()

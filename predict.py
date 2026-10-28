@@ -3,12 +3,16 @@ from ultralytics import YOLO
 import cv2
 import numpy as np
 from datetime import datetime
+import requests
 
 from loitering_detector import check_loitering
 from event_manager import create_event
 from risk_engine import assess_risk
 from incident_deduplicator import should_create_incident
 from incident_manager import create_incident
+from collections import deque
+import os
+import tempfile
 
 
 # -------------------- MODEL CONFIGURATION --------------------
@@ -17,24 +21,232 @@ model = YOLO("runs/detect/train-3/weights/best.pt")
 video_path = "video6125123190915079860.mp4"
 
 
-# -------------------- EVENT PIPELINE --------------------
+API_URL = "http://127.0.0.1:8000/api/events"
 
-def process_event(event):
-    """Assess risk and create an incident if the event is accepted."""
 
-    risk_result = assess_risk(event)
+STATUS_URL = "http://127.0.0.1:8000/api/monitoring/status"
 
-    print("\nEVENT:", event)
-    print("RISK:", risk_result)
 
-    if not should_create_incident(event):
-        print("Duplicate event suppressed.")
+def update_monitoring_status(is_running):
+    try:
+        response = requests.post(
+            STATUS_URL,
+            json={
+                "isRunning": is_running,
+                "activeSourceId": "local-video" if is_running else None,
+            },
+            timeout=3,
+        )
+        response.raise_for_status()
+        print("MONITORING STATUS:", response.json())
+
+    except requests.RequestException as exc:
+        print("Could not update monitoring status:", exc)
+
+
+def send_event_to_api(event, snapshot_url=None):
+    """Send a detected event to the FastAPI backend."""
+    try:
+        response = requests.post(
+            API_URL,
+            json={
+                "event_type": event["event_type"],
+                "track_id": event["track_id"],
+                "confidence": event.get("confidence") or 0.0,
+                "zone": event.get("zone"),
+                "direction": event.get("direction"),
+                "snapshot_url": snapshot_url,
+            },
+            timeout=3,
+        )
+        response.raise_for_status()
+        result = response.json()
+        print("API EVENT RESPONSE:", result)
+        return result
+
+    except requests.RequestException as exc:
+        print("Could not send event to FastAPI:", exc)
         return None
 
-    incident = create_incident(event, risk_result)
+def upload_snapshot(frame):
+    try:
+        success, encoded = cv2.imencode(
+            ".jpg",
+            frame,
+            [cv2.IMWRITE_JPEG_QUALITY, 85],
+        )
 
-    print("INCIDENT CREATED:", incident)
-    return incident
+        if not success:
+            print("Could not encode snapshot.")
+            return None
+
+        response = requests.post(
+            "http://127.0.0.1:8000/api/evidence/snapshot",
+            files={
+                "file": (
+                    "snapshot.jpg",
+                    encoded.tobytes(),
+                    "image/jpeg",
+                )
+            },
+            timeout=5,
+        )
+        response.raise_for_status()
+
+        return response.json()["snapshotUrl"]
+
+    except requests.RequestException as exc:
+        print("Snapshot upload failed:", exc)
+        return None
+
+
+
+class ClipRecorder:
+    """Record original frames from 5 seconds before to 5 seconds after an incident."""
+
+    def __init__(self, fps):
+        self.fps = max(1, round(fps))
+        self.pre_frames = self.fps * 5
+        self.post_frames = self.fps * 5
+        self.buffer = deque(maxlen=self.pre_frames)
+        self.pending = []
+        self.frame_index = 0
+
+    def add_frame(self, frame):
+        """Call once per processed frame, before handling events."""
+        self.frame_index += 1
+        original = frame.copy()
+
+        # Add this frame to clips already being recorded.
+        remaining = []
+        for clip in self.pending:
+            clip["frames"].append(original.copy())
+
+            if self.frame_index >= clip["end_frame"]:
+                self._upload_clip(clip)
+            else:
+                remaining.append(clip)
+
+        self.pending = remaining
+        self.buffer.append(original)
+
+    def start_clip(self, incident_id):
+        """Start a clip using the preceding 5 seconds plus 5 future seconds."""
+        frames = [frame.copy() for frame in self.buffer]
+
+        # Include the current frame if the buffer is not yet full.
+        if not frames:
+            print("Clip buffer is empty; cannot create pre-incident footage.")
+            return
+
+        self.pending.append({
+            "incident_id": incident_id,
+            "frames": frames,
+            "end_frame": self.frame_index + self.post_frames,
+        })
+
+        print(f"Recording incident clip: {incident_id}")
+
+    
+    def _upload_clip(self, clip):
+        if not clip["frames"]:
+            return
+
+        temp_path = None
+        h264_path = None
+
+        try:
+            height, width = clip["frames"][0].shape[:2]
+
+            with tempfile.NamedTemporaryFile(
+                suffix=".mp4", delete=False
+            ) as temp:
+                temp_path = temp.name
+
+            writer = cv2.VideoWriter(
+                temp_path,
+                cv2.VideoWriter_fourcc(*"mp4v"),
+                self.fps,
+                (width, height),
+            )
+
+            if not writer.isOpened():
+                print("Could not initialize MP4 writer.")
+                return
+
+            try:
+                for frame in clip["frames"]:
+                    writer.write(frame)
+            finally:
+                writer.release()
+
+            h264_path = temp_path.replace(".mp4", "_h264.mp4")
+
+            # Convert to browser-compatible H.264.
+            import subprocess
+
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-i", temp_path,
+                    "-an",
+                    "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p",
+                    "-movflags", "+faststart",
+                    h264_path,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            with open(h264_path, "rb") as video_file:
+                response = requests.post(
+                    f"http://127.0.0.1:8000/api/incidents/"
+                    f"{clip['incident_id']}/evidence/clip",
+                    files={
+                        "file": (
+                            "incident.mp4",
+                            video_file,
+                            "video/mp4",
+                        )
+                    },
+                    timeout=60,
+                )
+
+            response.raise_for_status()
+            print("H.264 CLIP UPLOADED:", response.json())
+
+        except (requests.RequestException, OSError, subprocess.SubprocessError) as exc:
+            print("Clip creation/upload failed:", exc)
+
+        finally:
+            for path in (temp_path, h264_path):
+                if path and os.path.exists(path):
+                    os.remove(path)
+
+
+
+
+# -------------------- EVENT PIPELINE --------------------
+
+
+def process_event(event, frame, original_frame, clip_recorder):
+    snapshot_url = upload_snapshot(frame)
+    result = send_event_to_api(event, snapshot_url)
+
+    if result and result.get("created"):
+        incident = result.get("incident") or {}
+        incident_id = incident.get("id")
+
+        print("INCIDENT CREATED BY API:", incident)
+
+        if incident_id:
+            clip_recorder.start_clip(incident_id)
+
+    elif result and result.get("reason") == "duplicate":
+        print("Duplicate event suppressed by API.")
+
 
 
 # -------------------- POLYGON SELECTION --------------------
@@ -56,6 +268,9 @@ cv2.namedWindow(window_name)
 cv2.setMouseCallback(window_name, mouse_callback)
 
 cap = cv2.VideoCapture(video_path)
+video_fps = cap.get(cv2.CAP_PROP_FPS)
+if not video_fps or video_fps <= 0:
+    video_fps = 30
 ret, frame = cap.read()
 
 if not ret:
@@ -109,6 +324,9 @@ if quit_requested:
     cv2.destroyAllWindows()
     raise SystemExit(0)
 
+update_monitoring_status(True)
+
+clip_recorder = ClipRecorder(video_fps)
 
 # -------------------- PERSON TRACKING --------------------
 
@@ -124,6 +342,9 @@ results = model.track(
 
 try:
     for result in results:
+        original_frame = result.orig_img.copy()
+        clip_recorder.add_frame(original_frame)
+
         frame = result.plot()
 
         # Draw the configured restricted zone.
@@ -176,7 +397,12 @@ try:
                         confidence=float(confidence),
                         zone="restricted zone"
                     )
-                    process_event(event)
+                    process_event(
+                        event,
+                        frame,
+                        original_frame,
+                        clip_recorder,
+                    )
 
                 # Zone exit.
                 elif was_inside and not inside:
@@ -186,7 +412,12 @@ try:
                         confidence=float(confidence),
                         zone="restricted zone"
                     )
-                    process_event(event)
+                    process_event(
+                        event,
+                        frame,
+                        original_frame,
+                        clip_recorder,
+                    )
 
                 previous_state[track_id] = inside
 
@@ -204,7 +435,12 @@ try:
                         confidence=float(confidence),
                         zone="restricted zone"
                     )
-                    process_event(event)
+                    process_event(
+                        event,
+                        frame,
+                        original_frame,
+                        clip_recorder,
+                    )
 
         cv2.imshow("NightGuard AI - Zone Test", frame)
 
@@ -212,4 +448,5 @@ try:
             break
 
 finally:
+    update_monitoring_status(False)
     cv2.destroyAllWindows()

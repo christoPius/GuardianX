@@ -21,33 +21,50 @@ export function EvidenceViewer({ evidence }: { evidence: EvidenceAsset }) {
           <div>
             <p className="text-xs font-data text-ink-muted uppercase tracking-wide mb-2">Snapshot</p>
             {hasSnapshot ? (
-              <div className="aspect-video rounded-[4px] border border-hairline bg-[#050708] flex items-center justify-center overflow-hidden">
-                <MockFrame />
-              </div>
-            ) : (
-              <div className="rounded-[4px] border border-dashed border-hairline-strong py-8 text-center">
-                <p className="text-sm text-ink-faint">Snapshot unavailable</p>
-              </div>
-            )}
+          <div className="aspect-video rounded-[4px] border border-hairline bg-[#050708] flex items-center justify-center overflow-hidden">
+            <img
+              src={
+                evidence.snapshotUrl!.startsWith("http")
+                  ? evidence.snapshotUrl!
+                  : `${process.env.NEXT_PUBLIC_API_BASE_URL}${evidence.snapshotUrl}`
+              }
+              alt="Incident snapshot"
+              className="w-full h-full object-contain"
+            />
+          </div>
+        ) : (
+          <div className="rounded-[4px] border border-dashed border-hairline-strong py-8 text-center">
+            <p className="text-sm text-ink-faint">Snapshot unavailable</p>
+          </div>
+        )}
           </div>
 
           <div>
             <p className="text-xs font-data text-ink-muted uppercase tracking-wide mb-2">Video clip</p>
-            {hasClip ? (
-              <div className="aspect-video rounded-[4px] border border-hairline bg-[#050708] flex items-center justify-center">
-                <div className="flex flex-col items-center gap-2 text-ink-faint">
-                  <svg width="36" height="36" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="1.4" />
-                    <path d="M10 8.5v7l6-3.5-6-3.5z" fill="currentColor" />
-                  </svg>
-                  <span className="text-xs font-data">DEMO / MOCK CLIP — playback wired to FastAPI evidence route</span>
-                </div>
-              </div>
-            ) : (
-              <div className="rounded-[4px] border border-dashed border-hairline-strong py-8 text-center">
-                <p className="text-sm text-ink-faint">Video clip unavailable</p>
-              </div>
-            )}
+            
+{hasClip ? (
+  <div className="aspect-video overflow-hidden rounded-[4px] border border-hairline bg-[#050708]">
+    <video
+      key={evidence.clipUrl}
+      controls
+      preload="metadata"
+      playsInline
+      className="h-full w-full object-contain"
+      src={
+        evidence.clipUrl!.startsWith("http")
+          ? evidence.clipUrl!
+          : `${(process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "")}${evidence.clipUrl}`
+      }
+    >
+      Your browser does not support video playback.
+    </video>
+  </div>
+) : (
+  <div className="rounded-[4px] border border-dashed border-hairline-strong py-8 text-center">
+    <p className="text-sm text-ink-faint">Video clip unavailable</p>
+  </div>
+)}
+
           </div>
         </div>
       )}

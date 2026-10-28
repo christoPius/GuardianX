@@ -15,6 +15,8 @@ def create_event(
         "zone": zone,
         "direction": direction
     }
+
+    
     return event
 
 if __name__ == "__main__":

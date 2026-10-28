@@ -8,3 +8,10 @@ runs/
 weights/
 
 *.pt
+
+__pycache__/
+*.py[cod]
+*.mp4
+.env
+.env.*
+!.env.example

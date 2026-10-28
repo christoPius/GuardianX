@@ -5,7 +5,7 @@ from incident_deduplicator import should_create_incident
 from incident_manager import create_incident
 
 
-def main():
+def test_event_pipeline():
     # 1. Create a synthetic line-crossing event
     event = create_event(
         event_type="line_crossing",
@@ -52,5 +52,4 @@ def main():
     print("\nPASS: Event pipeline checks completed.")
 
 
-if __name__ == "__main__":
-    main()
+

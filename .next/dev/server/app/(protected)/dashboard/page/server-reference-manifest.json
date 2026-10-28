@@ -1,0 +1,16 @@
+{
+  "node": {
+    "00731c55d5502b327b60b8b5bd57d08f2b7d82b3b9": {
+      "workers": {
+        "app/(protected)/dashboard/page": {
+          "moduleId": "[project]/.next-internal/server/app/(protected)/dashboard/page/actions.js { ACTIONS_MODULE0 => \"[project]/app/auth/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": false,
+          "codeHash": null
+        }
+      },
+      "exportedName": "logout",
+      "filename": "app/auth/actions.ts"
+    }
+  },
+  "edge": {}
+}

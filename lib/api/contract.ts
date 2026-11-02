@@ -39,6 +39,12 @@ import type {
 export interface NightGuardApiClient {
   getMonitoringStatus(): Promise<ApiResult<MonitoringStatus>>;
 
+  
+  uploadVideo(file: File): Promise<ApiResult<{ sourceId: string; filename: string }>>;
+  startMonitoring(sourceId: string): Promise<ApiResult<{ isRunning: boolean; activeSourceId: string | null }>>;
+  stopMonitoring(): Promise<ApiResult<{ isRunning: boolean; activeSourceId: string | null }>>;
+
+
   getSources(): Promise<ApiResult<CameraSource[]>>;
   testSourceConnection(sourceId: string): Promise<ApiResult<{ status: "ok" | "failed"; message: string }>>;
   saveSource(source: CameraSource): Promise<ApiResult<CameraSource>>;

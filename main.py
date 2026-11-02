@@ -20,6 +20,10 @@ from uuid import uuid4
 
 from fastapi import File, UploadFile
 from fastapi.staticfiles import StaticFiles
+import subprocess
+import sys
+from fastapi import Form
+from fastapi.responses import JSONResponse
 
 app = FastAPI(
     title="NightGuard AI API",
@@ -84,6 +88,21 @@ initialize_database()
 monitoring_running = False
 active_source_id = None
 
+BASE_DIR = Path(__file__).resolve().parent
+
+UPLOAD_DIR = BASE_DIR / "uploads" / "videos"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# Uploaded sources available during the current backend session.
+uploaded_sources: dict[str, dict[str, str]] = {}
+
+# Detector subprocess management.
+detector_process: subprocess.Popen | None = None
+monitoring_lock = Lock()
+
+MAX_VIDEO_SIZE = 500 * 1024 * 1024  # 500 MB
+ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv"}
+
 
 def to_frontend_incident(raw: dict[str, Any]) -> dict[str, Any]:
     event_type = raw.get("event_type")
@@ -104,8 +123,12 @@ def to_frontend_incident(raw: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "id": raw["incident_id"],
-        "sourceId": "local-video",
-        "sourceName": "Local video",
+        "sourceId": active_source_id or "local-video",
+        "sourceName": (
+            uploaded_sources.get(active_source_id, {}).get("filename", "Local video")
+            if active_source_id
+            else "Local video"
+        ),
         "eventType": event_type_map.get(event_type, "boundary_crossing"),
         "severity": severity,
         "score": float(raw.get("risk_score") or 0),
@@ -149,6 +172,91 @@ def get_monitoring_status():
         "lastEventAt": last_event_at,
     }
 
+class StartMonitoringRequest(BaseModel):
+    sourceId: str
+
+
+@app.post("/api/monitoring/start")
+def start_monitoring(payload: StartMonitoringRequest):
+    global detector_process, monitoring_running, active_source_id
+
+    with monitoring_lock:
+        if detector_process is not None and detector_process.poll() is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Monitoring is already running.",
+            )
+
+        source = uploaded_sources.get(payload.sourceId)
+
+        if source is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Uploaded video source not found. Upload it again.",
+            )
+
+        video_path = Path(source["path"])
+
+        if not video_path.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail="Uploaded video file does not exist.",
+            )
+
+        try:
+            detector_process = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(BASE_DIR / "predict.py"),
+                    "--video",
+                    str(video_path),
+                    "--source-id",
+                    payload.sourceId,
+                ],
+                cwd=str(BASE_DIR),
+            )
+
+        except OSError as exc:
+            detector_process = None
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not start detector: {exc}",
+            )
+
+        monitoring_running = True
+        active_source_id = payload.sourceId
+
+    return {
+        "isRunning": True,
+        "activeSourceId": payload.sourceId,
+    }
+
+
+@app.post("/api/monitoring/stop")
+def stop_monitoring():
+    global detector_process, monitoring_running, active_source_id
+
+    with monitoring_lock:
+        if detector_process is not None:
+            if detector_process.poll() is None:
+                detector_process.terminate()
+
+                try:
+                    detector_process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    detector_process.kill()
+                    detector_process.wait()
+
+            detector_process = None
+
+        monitoring_running = False
+        active_source_id = None
+
+    return {
+        "isRunning": False,
+        "activeSourceId": None,
+    }
+
 @app.post("/api/monitoring/status")
 def update_monitoring_status(payload: dict):
     global monitoring_running, active_source_id
@@ -167,9 +275,73 @@ def update_monitoring_status(payload: dict):
     }
 
 
+
+
+@app.post("/api/sources/video/upload")
+def upload_video(file: UploadFile = File(...)):
+    original_name = Path(file.filename or "").name
+    extension = Path(original_name).suffix.lower()
+
+    if extension not in ALLOWED_VIDEO_EXTENSIONS:
+        raise HTTPException(
+            status_code=415,
+            detail="Unsupported video format. Use MP4, AVI, MOV or MKV.",
+        )
+
+    source_id = f"uploaded-video-{uuid4().hex[:12]}"
+    filename = f"{source_id}{extension}"
+    destination = UPLOAD_DIR / filename
+
+    total_size = 0
+
+    try:
+        with destination.open("wb") as output:
+            while True:
+                chunk = file.file.read(1024 * 1024)
+
+                if not chunk:
+                    break
+
+                total_size += len(chunk)
+
+                if total_size > MAX_VIDEO_SIZE:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="Video exceeds the 500 MB upload limit.",
+                    )
+
+                output.write(chunk)
+
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+
+    finally:
+        file.file.close()
+
+    uploaded_sources[source_id] = {
+        "sourceId": source_id,
+        "filename": original_name,
+        "path": str(destination),
+    }
+
+    return {
+        "sourceId": source_id,
+        "filename": original_name,
+    }
+
+
 @app.get("/api/sources")
 def get_sources():
-    return []
+    return [
+        {
+            "id": source["sourceId"],
+            "name": source["filename"],
+            "type": "video",
+            "status": "available",
+        }
+        for source in uploaded_sources.values()
+    ]
 
 
 

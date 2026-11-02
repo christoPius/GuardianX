@@ -29,6 +29,45 @@ async function request<T>(path: string, init?: RequestInit): Promise<ApiResult<T
 export const httpApiClient: NightGuardApiClient = {
   getMonitoringStatus: () => request("/api/monitoring/status"),
 
+  
+  uploadVideo: async (file: File) => {
+    try {
+      const form = new FormData();
+      form.append("file", file);
+
+      const res = await fetch(`${BASE_URL}/api/sources/video/upload`, {
+        method: "POST",
+        body: form,
+      });
+
+      if (!res.ok) {
+        return {
+          ok: false,
+          error: `Video upload failed (${res.status}): ${res.statusText}`,
+        };
+      }
+
+      return { ok: true, data: await res.json() };
+    } catch {
+      return {
+        ok: false,
+        error: "Backend unreachable while uploading video.",
+      };
+    }
+  },
+
+  startMonitoring: (sourceId: string) =>
+    request("/api/monitoring/start", {
+      method: "POST",
+      body: JSON.stringify({ sourceId }),
+    }),
+
+  stopMonitoring: () =>
+    request("/api/monitoring/stop", {
+      method: "POST",
+    }),
+
+
   getSources: () => request("/api/sources"),
   testSourceConnection: (sourceId) =>
     request(`/api/sources/${sourceId}/test-connection`, { method: "POST" }),

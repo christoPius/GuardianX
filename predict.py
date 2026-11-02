@@ -13,12 +13,35 @@ from incident_manager import create_incident
 from collections import deque
 import os
 import tempfile
+import argparse
+from pathlib import Path
+
 
 
 # -------------------- MODEL CONFIGURATION --------------------
 
-model = YOLO("runs/detect/train-3/weights/best.pt")
-video_path = "video6125123190915079860.mp4"
+# -------------------- MODEL CONFIGURATION --------------------
+
+BASE_DIR = Path(__file__).resolve().parent
+
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--video",
+    default=str(BASE_DIR / "video6125123190915079860.mp4")
+)
+parser.add_argument(
+    "--source-id",
+    default="local-video"
+)
+
+args = parser.parse_args()
+
+video_path = args.video
+ACTIVE_SOURCE_ID = args.source_id
+
+model = YOLO(
+    str(BASE_DIR / "runs" / "detect" / "train-3" / "weights" / "best.pt")
+)
 
 
 API_URL = "http://127.0.0.1:8000/api/events"
@@ -33,7 +56,7 @@ def update_monitoring_status(is_running):
             STATUS_URL,
             json={
                 "isRunning": is_running,
-                "activeSourceId": "local-video" if is_running else None,
+                "activeSourceId": ACTIVE_SOURCE_ID if is_running else None,
             },
             timeout=3,
         )
